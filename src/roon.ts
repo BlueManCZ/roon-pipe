@@ -1,0 +1,287 @@
+// @ts-expect-error
+import RoonApi from "node-roon-api";
+// @ts-expect-error
+import RoonApiBrowse from "node-roon-api-browse";
+// @ts-expect-error
+import RoonApiImage from "node-roon-api-image";
+// @ts-expect-error
+import RoonApiTransport from "node-roon-api-transport";
+
+let zone: any = null;
+let coreInstance: any = null;
+
+export interface RoonCallbacks {
+    onCorePaired: (core: any) => void;
+    onCoreUnpaired: (core: any) => void;
+    onZoneChanged: (zone: any, core: any) => void;
+    onSeekChanged: (seekPosition: number) => void;
+}
+
+export function initRoon(callbacks: RoonCallbacks) {
+    const roon = new RoonApi({
+        extension_id: "com.bluemancz.roonpipe",
+        display_name: "RoonPipe",
+        display_version: "1.0.0",
+        publisher: "BlueManCZ",
+        email: "your@email.com",
+        website: "https://github.com/bluemancz/roonpipe",
+        core_paired: (core: any) => {
+            coreInstance = core;
+            const transport = core.services.RoonApiTransport;
+
+            transport.subscribe_zones((cmd: any, data: any) => {
+                if (cmd === "Subscribed") {
+                    zone = data.zones.find((z: any) => z.state === "playing") || data.zones[0];
+                    callbacks.onZoneChanged(zone, core);
+                } else if (cmd === "Changed") {
+                    if (data.zones_changed) {
+                        const playingZone = data.zones_changed.find(
+                            (z: any) => z.state === "playing",
+                        );
+                        if (playingZone) {
+                            zone = playingZone;
+                        } else if (zone) {
+                            zone =
+                                data.zones_changed.find((z: any) => z.zone_id === zone.zone_id) ||
+                                zone;
+                        }
+                        callbacks.onZoneChanged(zone, core);
+                    }
+                    if (data.zones_seek_changed) {
+                        const seekUpdate = data.zones_seek_changed.find(
+                            (z: any) => z.zone_id === zone?.zone_id,
+                        );
+                        if (seekUpdate && zone) {
+                            zone.now_playing.seek_position = seekUpdate.seek_position;
+                            callbacks.onSeekChanged(seekUpdate.seek_position * 1_000_000);
+                        }
+                    }
+                }
+            });
+
+            callbacks.onCorePaired(core);
+            console.log(`Core paired: ${core.display_name}`);
+        },
+        core_unpaired: (core: any) => {
+            zone = null;
+            coreInstance = null;
+            callbacks.onCoreUnpaired(core);
+            console.log(`Core unpaired: ${core.display_name}`);
+        },
+    });
+
+    roon.init_services({
+        required_services: [RoonApiBrowse, RoonApiImage, RoonApiTransport],
+    });
+
+    roon.start_discovery();
+}
+
+export interface SearchResult {
+    title: string;
+    subtitle: string;
+    item_key: string;
+    image_key: string;
+    hint: string;
+    sessionKey: string;
+}
+
+export function searchRoon(query: string): Promise<SearchResult[]> {
+    return new Promise((resolve, reject) => {
+        if (!coreInstance) {
+            reject("Roon Core not connected");
+            return;
+        }
+
+        if (!zone) {
+            reject("No active zone");
+            return;
+        }
+
+        const browse = coreInstance.services.RoonApiBrowse;
+        const sessionKey = `search_${Date.now()}`;
+
+        const opts = {
+            hierarchy: "search",
+            input: query,
+            multi_session_key: sessionKey,
+            zone_or_output_id: zone.zone_id,
+        };
+
+        browse.browse(opts, (error: any, result: any) => {
+            if (error) {
+                reject(error);
+                return;
+            }
+
+            browse.load(
+                {
+                    ...opts,
+                    offset: 0,
+                    count: result.list.count,
+                },
+                (loadError: any, loadResult: any) => {
+                    if (loadError) {
+                        reject(loadError);
+                        return;
+                    }
+
+                    const tracksCategory = loadResult.items?.find(
+                        (item: any) => item.title === "Tracks",
+                    );
+
+                    if (!tracksCategory) {
+                        // No tracks category found - return empty array
+                        resolve([]);
+                        return;
+                    }
+
+                    browse.browse(
+                        {
+                            ...opts,
+                            item_key: tracksCategory.item_key,
+                        },
+                        (browseError: any, browseResult: any) => {
+                            if (browseError) {
+                                reject(browseError);
+                                return;
+                            }
+
+                            browse.load(
+                                {
+                                    ...opts,
+                                    item_key: tracksCategory.item_key,
+                                    offset: 0,
+                                    count: Math.min(browseResult.list.count, 50),
+                                },
+                                (tracksError: any, tracksResult: any) => {
+                                    if (tracksError) {
+                                        reject(tracksError);
+                                        return;
+                                    }
+
+                                    const items: SearchResult[] =
+                                        tracksResult.items?.map((item: any) => ({
+                                            title: item.title || "Unknown",
+                                            subtitle: item.subtitle || "",
+                                            item_key: item.item_key,
+                                            image_key: item.image_key,
+                                            hint: item.hint,
+                                            sessionKey: sessionKey,
+                                        })) || [];
+
+                                    resolve(items);
+                                },
+                            );
+                        },
+                    );
+                },
+            );
+        });
+    });
+}
+
+export function playItem(itemKey: string, sessionKey: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+        if (!coreInstance) {
+            reject("Roon Core not connected");
+            return;
+        }
+
+        if (!zone) {
+            reject("No active zone");
+            return;
+        }
+
+        const browse = coreInstance.services.RoonApiBrowse;
+
+        function loadUntilAction(currentItemKey: string, depth: number = 0) {
+            if (depth > 5) {
+                reject("Too many levels, cannot find action");
+                return;
+            }
+
+            browse.browse(
+                {
+                    hierarchy: "search",
+                    multi_session_key: sessionKey,
+                    item_key: currentItemKey,
+                    zone_or_output_id: zone.zone_id,
+                },
+                (browseError: any, browseResult: any) => {
+                    if (browseError) {
+                        reject(browseError);
+                        return;
+                    }
+
+                    browse.load(
+                        {
+                            hierarchy: "search",
+                            multi_session_key: sessionKey,
+                            item_key: currentItemKey,
+                            offset: 0,
+                            count: browseResult.list?.count || 10,
+                            zone_or_output_id: zone.zone_id,
+                        },
+                        (loadError: any, loadResult: any) => {
+                            if (loadError) {
+                                reject(loadError);
+                                return;
+                            }
+
+                            if (!loadResult.items || loadResult.items.length === 0) {
+                                reject("No items found");
+                                return;
+                            }
+
+                            const playNowAction = loadResult.items.find(
+                                (item: any) =>
+                                    item.hint === "action" &&
+                                    (item.title === "Play Now" || item.title === "Play"),
+                            );
+
+                            if (playNowAction) {
+                                browse.browse(
+                                    {
+                                        hierarchy: "search",
+                                        multi_session_key: sessionKey,
+                                        item_key: playNowAction.item_key,
+                                        zone_or_output_id: zone.zone_id,
+                                    },
+                                    (playError: any) => {
+                                        if (playError) {
+                                            reject(playError);
+                                        } else {
+                                            console.log("Successfully started playback");
+                                            resolve();
+                                        }
+                                    },
+                                );
+                            } else {
+                                const actionList = loadResult.items.find(
+                                    (item: any) => item.hint === "action_list",
+                                );
+
+                                if (actionList) {
+                                    loadUntilAction(actionList.item_key, depth + 1);
+                                } else {
+                                    reject("Could not find Play action or next level");
+                                }
+                            }
+                        },
+                    );
+                },
+            );
+        }
+
+        loadUntilAction(itemKey);
+    });
+}
+
+export function getZone() {
+    return zone;
+}
+
+export function getCore() {
+    return coreInstance;
+}
