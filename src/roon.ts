@@ -7,6 +7,8 @@ import RoonApiImage from "node-roon-api-image";
 // @ts-expect-error
 import RoonApiTransport from "node-roon-api-transport";
 
+import { cacheImages } from "./image-cache";
+
 let zone: any = null;
 let coreInstance: any = null;
 
@@ -82,6 +84,7 @@ export interface SearchResult {
     subtitle: string;
     item_key: string;
     image_key: string;
+    image: string | null;
     hint: string;
     sessionKey: string;
 }
@@ -154,11 +157,20 @@ export function searchRoon(query: string): Promise<SearchResult[]> {
                                     offset: 0,
                                     count: Math.min(browseResult.list.count, 50),
                                 },
-                                (tracksError: any, tracksResult: any) => {
+                                async (tracksError: any, tracksResult: any) => {
                                     if (tracksError) {
                                         reject(tracksError);
                                         return;
                                     }
+
+                                    // Cache all images in parallel
+                                    const imageKeys =
+                                        tracksResult.items
+                                            ?.map((item: any) => item.image_key)
+                                            .filter(Boolean) || [];
+
+                                    const imageApi = coreInstance.services.RoonApiImage;
+                                    const cachedImages = await cacheImages(imageApi, imageKeys);
 
                                     const items: SearchResult[] =
                                         tracksResult.items?.map((item: any) => ({
@@ -166,6 +178,7 @@ export function searchRoon(query: string): Promise<SearchResult[]> {
                                             subtitle: item.subtitle || "",
                                             item_key: item.item_key,
                                             image_key: item.image_key,
+                                            image: cachedImages.get(item.image_key) || null,
                                             hint: item.hint,
                                             sessionKey: sessionKey,
                                         })) || [];

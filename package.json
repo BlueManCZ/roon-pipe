@@ -11,7 +11,8 @@
         "start": "node dist/index.js",
         "dev": "nodemon src/index.ts",
         "cli": "tsc && node dist/index.js --cli",
-        "prepublishOnly": "tsc"
+        "prepublishOnly": "tsc",
+        "biome": "biome check"
     },
     "keywords": [
         "roon",
@@ -32,7 +33,7 @@
         "@types/node-notifier": "^8.0.5",
         "nodemon": "^3.1.11",
         "ts-node": "^10.9.2",
-        "typescript": "^5.5.3"
+        "typescript": "^5.9.3"
     },
     "files": [
         "dist"

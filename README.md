@@ -140,6 +140,7 @@ Response:
       "title": "Let It Be",
       "subtitle": "The Beatles · Let It Be",
       "item_key": "10:0",
+      "image": "/home/user/.cache/roonpipe/images/abc123.jpg",
       "sessionKey": "search_1234567890"
     }
   ]
