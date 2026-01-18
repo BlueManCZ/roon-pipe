@@ -44,6 +44,14 @@ Found 50 track(s):
 
 ## Installation
 
+### From npm (recommended)
+
+```bash
+npm install -g roon-pipe
+```
+
+### From source
+
 ```bash
 git clone https://github.com/BlueManCZ/roon-pipe.git
 cd roon-pipe
@@ -58,6 +66,12 @@ pnpm build
 Start the daemon to enable MPRIS integration and the socket server:
 
 ```bash
+roonpipe
+```
+
+Or if installed from source:
+
+```bash
 pnpm start
 ```
 
@@ -66,6 +80,12 @@ On first run, open Roon and authorize the "RoonPipe" extension in **Settings →
 ### Interactive CLI
 
 Search and play tracks from your terminal:
+
+```bash
+roonpipe --cli
+```
+
+Or if installed from source:
 
 ```bash
 pnpm run cli

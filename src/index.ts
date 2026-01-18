@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 import console from "node:console";
 
 import { startCLI } from "./cli";
