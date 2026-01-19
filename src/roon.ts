@@ -23,10 +23,11 @@ export function initRoon(callbacks: RoonCallbacks) {
     const roon = new RoonApi({
         extension_id: "com.bluemancz.roonpipe",
         display_name: "RoonPipe",
-        display_version: "1.0.2",
+        display_version: "1.0.3",
         publisher: "BlueManCZ",
         email: "your@email.com",
         website: "https://github.com/bluemancz/roonpipe",
+        log_level: "none",
         core_paired: (core: any) => {
             coreInstance = core;
             const transport = core.services.RoonApiTransport;
@@ -53,7 +54,7 @@ export function initRoon(callbacks: RoonCallbacks) {
                         const seekUpdate = data.zones_seek_changed.find(
                             (z: any) => z.zone_id === zone?.zone_id,
                         );
-                        if (seekUpdate && zone) {
+                        if (seekUpdate && zone?.now_playing) {
                             zone.now_playing.seek_position = seekUpdate.seek_position;
                             callbacks.onSeekChanged(seekUpdate.seek_position * 1_000_000);
                         }
@@ -83,7 +84,6 @@ export interface SearchResult {
     title: string;
     subtitle: string;
     item_key: string;
-    image_key: string;
     image: string | null;
     hint: string;
     sessionKey: string;
@@ -177,7 +177,6 @@ export function searchRoon(query: string): Promise<SearchResult[]> {
                                             title: item.title || "Unknown",
                                             subtitle: item.subtitle || "",
                                             item_key: item.item_key,
-                                            image_key: item.image_key,
                                             image: cachedImages.get(item.image_key) || null,
                                             hint: item.hint,
                                             sessionKey: sessionKey,
@@ -218,15 +217,29 @@ function skipToNext(): Promise<void> {
     });
 }
 
+/**
+ * Check if there's an active queue (something is playing or paused)
+ */
+function hasActiveQueue(): boolean {
+    if (!zone) return false;
+    return zone.now_playing && (zone.state === "playing" || zone.state === "paused");
+}
+
 export async function playItem(
     itemKey: string,
     sessionKey: string,
     action: PlayAction = "play",
 ): Promise<void> {
-    // "playNow" = add next + skip to it (preserves queue)
+    // "playNow" = preserve the queue if possible.
     if (action === "playNow") {
-        await playItemInternal(itemKey, sessionKey, "addNext");
-        await skipToNext();
+        if (hasActiveQueue()) {
+            // If the queue exists: add next + skip to it
+            await playItemInternal(itemKey, sessionKey, "addNext");
+            await skipToNext();
+        } else {
+            // If no queue: use the regular "Play now" action
+            await playItemInternal(itemKey, sessionKey, "play");
+        }
         return;
     }
 

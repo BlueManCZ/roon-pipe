@@ -202,6 +202,7 @@ export function updateMprisMetadata(zone: any, core: any) {
 
     if (!zone || !zone.now_playing) {
         mpris.metadata = {};
+        mpris.playbackStatus = "Stopped";
         return;
     }
 
