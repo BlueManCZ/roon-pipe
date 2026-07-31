@@ -11,6 +11,7 @@ import { showTrackNotification } from "./notification";
 import {
     getCore,
     getNowPlaying,
+    getPairingStatus,
     getQueue,
     getZone,
     initRoon,
@@ -136,28 +137,37 @@ if (tidalUrl) {
         // Initialize MPRIS
         initMpris(() => getCore()?.services.RoonApiTransport, getZone);
 
-        // Initialize Roon and start socket server
+        // Start the control surfaces before Roon pairing. The daemon is a real,
+        // reachable process from this point on — commands needing a Core are
+        // rejected with an actionable reason rather than a connection refusal,
+        // so `--cli` can explain an unauthorized extension instead of implying
+        // the daemon isn't running.
+        const handlers = {
+            search: searchRoon,
+            play: playItem,
+            playTidalTrack,
+            nowPlaying: getNowPlaying,
+            queue: getQueue,
+            playFromQueue,
+            pairingStatus: getPairingStatus,
+        };
+        startSocketServer(handlers);
+
+        // Expose the same handlers over the network if configured.
+        if (tcpConfig) {
+            startTcpServer(handlers, tcpConfig.host, tcpConfig.port, tcpConfig.token);
+        }
+
+        // Initialize GNOME-Shell Search Provider only on GNOME
+        if (isRunningOnGnome()) {
+            initGnomeSearchProvider(searchRoon, playItem);
+        }
+
+        // Initialize Roon
         initRoon({
+            // Servers are already listening; roon.ts logs the pairing itself.
             onCorePaired: (_core: any) => {
-                const handlers = {
-                    search: searchRoon,
-                    play: playItem,
-                    playTidalTrack,
-                    nowPlaying: getNowPlaying,
-                    queue: getQueue,
-                    playFromQueue,
-                };
-                startSocketServer(handlers);
-
-                // Expose the same handlers over the network if configured.
-                if (tcpConfig) {
-                    startTcpServer(handlers, tcpConfig.host, tcpConfig.port, tcpConfig.token);
-                }
-
-                // Initialize GNOME-Shell Search Provider only on GNOME
-                if (isRunningOnGnome()) {
-                    initGnomeSearchProvider(searchRoon, playItem);
-                }
+                // Nothing to start here anymore.
             },
             onCoreUnpaired: (_core: any) => {
                 // Clear MPRIS metadata when unpaired

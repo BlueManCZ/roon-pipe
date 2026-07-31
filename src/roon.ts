@@ -83,6 +83,117 @@ function subscribeQueue(core: any, targetZone: any) {
     });
 }
 
+// Roon's pairing handshake is silent: until the extension is enabled in
+// Roon → Settings → Extensions, ``core_paired`` never fires and the daemon
+// looks hung. Poll the pairing state and say what is actually missing.
+const PAIRING_CHECK_INTERVAL_MS = 5_000;
+const PAIRING_FIRST_WARNING_MS = 10_000;
+const PAIRING_REPEAT_WARNING_MS = 60_000;
+
+// The RoonApi instance, kept module-level so pairing state can be reported
+// after ``initRoon`` returns.
+let roonApi: any = null;
+
+/**
+ * Why the daemon does or doesn't have a usable Roon Core:
+ *  - ``paired``       — connected and ready to serve commands
+ *  - ``unauthorized`` — a Core is on the network but the extension has not been
+ *                       enabled in Roon → Settings → Extensions
+ *  - ``searching``    — no Core discovered yet
+ */
+export type PairingState = "paired" | "unauthorized" | "searching";
+
+export interface PairingStatus {
+    state: PairingState;
+    /** Hosts of Cores discovered on the network (empty while searching). */
+    cores: string[];
+    /** Display name of the paired Core, when there is one. */
+    core_name?: string;
+    /** Human-readable explanation, suitable for showing to a user verbatim. */
+    message: string;
+}
+
+// Hosts of the cores discovered on the network. The library exposes these only
+// as an internal, so treat a missing/renamed field as "nothing discovered" and
+// fall back to the generic message rather than crashing the caller.
+function discoveredCoreHosts(roon: any): string[] {
+    const conns = roon?._sood_conns;
+    if (!conns || typeof conns !== "object") return [];
+    return Object.values(conns)
+        .map((moo: any) => moo?.transport?.host)
+        .filter((host: any): host is string => typeof host === "string");
+}
+
+/**
+ * Current pairing state, with a message explaining what (if anything) the user
+ * needs to do. Single source of truth for the startup watchdog, the socket API
+ * and the CLI, so all three describe the same situation the same way.
+ */
+export function getPairingStatus(): PairingStatus {
+    if (coreInstance) {
+        return {
+            state: "paired",
+            cores: discoveredCoreHosts(roonApi),
+            core_name: coreInstance.display_name,
+            message: `Connected to Roon Core "${coreInstance.display_name}".`,
+        };
+    }
+
+    const cores = discoveredCoreHosts(roonApi);
+    if (cores.length > 0) {
+        return {
+            state: "unauthorized",
+            cores,
+            message:
+                `Roon Core found at ${cores.join(", ")}, but RoonPipe is not authorized yet. ` +
+                "Open Roon → Settings → Extensions and click 'Enable' next to RoonPipe.",
+        };
+    }
+
+    return {
+        state: "searching",
+        cores,
+        message:
+            "No Roon Core found on the network yet. Check that the Core is running and on " +
+            "the same subnet (Roon discovery uses UDP broadcast).",
+    };
+}
+
+// Explain an unpaired daemon on the console: once shortly after startup, then
+// at a slower cadence so a long-running daemon stays diagnosable without spam.
+function startPairingWatchdog(roon: any) {
+    let unpairedForMs = 0;
+    let lastWarnedAtMs = 0;
+    let wasPaired = false;
+
+    const timer = setInterval(() => {
+        if (roon.is_paired) {
+            // Reset so a later unpair (core restart, extension disabled) warns again.
+            unpairedForMs = 0;
+            lastWarnedAtMs = 0;
+            wasPaired = true;
+            return;
+        }
+
+        // Coming back from a paired state — core_unpaired already logged why.
+        if (wasPaired) {
+            wasPaired = false;
+            unpairedForMs = 0;
+        }
+
+        unpairedForMs += PAIRING_CHECK_INTERVAL_MS;
+        if (unpairedForMs < PAIRING_FIRST_WARNING_MS) return;
+        if (lastWarnedAtMs && unpairedForMs - lastWarnedAtMs < PAIRING_REPEAT_WARNING_MS) return;
+        lastWarnedAtMs = unpairedForMs;
+
+        const status = getPairingStatus();
+        console.warn(`⚠️ ${status.message}`);
+    }, PAIRING_CHECK_INTERVAL_MS);
+
+    // Never let the watchdog alone hold the process open.
+    timer.unref();
+}
+
 function resetQueue() {
     if (queueSub) {
         try {
@@ -184,8 +295,10 @@ export function initRoon(callbacks: RoonCallbacks) {
         },
     });
 
+    roonApi = roon;
     roon.init_services({ required_services: [RoonApiBrowse, RoonApiImage, RoonApiTransport] });
     roon.start_discovery();
+    startPairingWatchdog(roon);
 }
 
 export interface RoonAction {
@@ -279,7 +392,7 @@ function inferTypeFromCategory(categoryTitle: string): ItemType {
 }
 
 export async function searchRoon(query: string): Promise<SearchResult[]> {
-    if (!coreInstance) throw new Error("Roon Core not connected");
+    if (!coreInstance) throw new Error(getPairingStatus().message);
     if (!zone) throw new Error("No active zone");
 
     const browse = coreInstance.services.RoonApiBrowse;
@@ -432,7 +545,7 @@ export async function playItem(
     itemType?: string,
     itemImageKey?: string,
 ): Promise<void> {
-    if (!coreInstance) throw new Error("Roon Core not connected");
+    if (!coreInstance) throw new Error(getPairingStatus().message);
     if (!zone) throw new Error("No active zone");
 
     const browse = coreInstance.services.RoonApiBrowse;

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import net from "node:net";
 
 import { removeFrequencyEntry } from "./frequency";
-import type { NowPlayingResponse, QueueResponse } from "./roon";
+import type { NowPlayingResponse, PairingStatus, QueueResponse } from "./roon";
 
 const SOCKET_PATH = "/tmp/roonpipe.sock";
 let socketServer: net.Server | null = null;
@@ -25,7 +25,20 @@ export interface SocketHandlers {
     nowPlaying: () => NowPlayingResponse;
     queue: () => QueueResponse;
     playFromQueue: (queueItemId: number) => void;
+    pairingStatus: () => PairingStatus;
 }
+
+// Commands that need a paired Roon Core. The listener comes up before pairing
+// (so `--cli` gets a real answer instead of a connection refusal), which means
+// these have to be rejected explicitly with an actionable reason.
+const CORE_REQUIRED_COMMANDS = new Set([
+    "search",
+    "play",
+    "play_tidal_track",
+    "now_playing",
+    "queue",
+    "play_from_queue",
+]);
 
 /**
  * Check if another instance is already running by trying to connect to the socket
@@ -74,6 +87,30 @@ async function processRequest(
     handlers: SocketHandlers,
 ): Promise<void> {
     console.log("Received request:", request);
+
+    if (request.command === "status") {
+        const status = handlers.pairingStatus();
+        client.write(`${JSON.stringify({ error: null, ...status })}\n`);
+        client.end();
+        return;
+    }
+
+    // Fail early, and with the reason, when the Core isn't available yet.
+    if (CORE_REQUIRED_COMMANDS.has(request.command)) {
+        const status = handlers.pairingStatus();
+        if (status.state !== "paired") {
+            client.write(
+                `${JSON.stringify({
+                    error: status.message,
+                    pairing_state: status.state,
+                    results: null,
+                    success: false,
+                })}\n`,
+            );
+            client.end();
+            return;
+        }
+    }
 
     if (request.command === "search") {
         try {

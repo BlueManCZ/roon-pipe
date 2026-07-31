@@ -42,6 +42,7 @@
         "dist",
         "scripts",
         "data",
+        "CHANGELOG.md",
         "!scripts/postbuild.ts"
     ],
     "dependencies": {

@@ -63,7 +63,9 @@ async function searchQuery(): Promise<string> {
     });
 }
 
-async function search(): Promise<SearchResult[]> {
+// Returns null when the search could not be run at all, so the caller can
+// distinguish a failed request from a query that genuinely matched nothing.
+async function search(): Promise<SearchResult[] | null> {
     const query = await searchQuery();
     if (!query.trim()) return [];
 
@@ -74,7 +76,7 @@ async function search(): Promise<SearchResult[]> {
         return response.results || [];
     } catch (error) {
         console.error("❌ Error:", error);
-        return [];
+        return null;
     }
 }
 
@@ -180,12 +182,37 @@ async function playTrack(track: SearchResult, action: RoonAction): Promise<void>
     }
 }
 
+/**
+ * Report why the daemon can't serve searches yet, if it can't. Returns false
+ * when there is no point entering the search loop.
+ */
+async function checkDaemonReady(): Promise<boolean> {
+    let status: { state?: string; message?: string };
+    try {
+        status = await sendCommand({ command: "status" });
+    } catch (error) {
+        console.error(`❌ ${error}\n`);
+        return false;
+    }
+
+    if (status.state !== "paired") {
+        console.error(`⚠️ ${status.message}\n`);
+        return false;
+    }
+
+    return true;
+}
+
 export async function startCLI() {
     console.log("\n🎵 RoonPipe Interactive Search");
     console.log("==============================\n");
 
+    if (!(await checkDaemonReady())) return;
+
     while (true) {
         const results = await search();
+        // Request failed — the reason was already printed.
+        if (results === null) continue;
         if (!results.length) {
             console.log("❌ No results found.\n");
             continue;
